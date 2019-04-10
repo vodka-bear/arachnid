@@ -114,7 +114,7 @@ class Crawler
         $this->traverseSingle($url, 0);
 
         for($depth=1; $depth< $this->maxDepth; $depth++){ 
-            $this->log(LogLevel::DEBUG, "crwaling in depth#".$depth);
+            $this->log(LogLevel::DEBUG, "crawling in depth#".$depth);
             if(!isset($this->childrenByDepth[$depth])){
                 $this->log(LogLevel::INFO, "skipping level#".$depth." no items found");
                 continue;
@@ -124,9 +124,26 @@ class Crawler
             foreach($this->childrenByDepth[$depth] as $parentUrl => $parentChilds){                
                 $this->log(LogLevel::DEBUG, '('.$count."/".count($this->childrenByDepth[$depth]).") crawling links of ".$parentUrl. ' count of links '.count($parentChilds));
                 $parentLink = $this->links[$parentUrl];
+
+                $client = $this->getScrapClient();                 
+                $crawler = $client->requestPage($parentUrl); 
+
                 foreach($parentChilds as $childUrl){
                     $childLink = new Link($childUrl,$parentLink);
                     $this->traverseSingle($childLink, $depth);
+                    
+                    if ($crawler) {
+                        $crawler->filter('a')->each(function (DomCrawler $node, $i) use (&$childLink, $depth) {
+                            
+                            $href = $node->extract('href')[0];
+
+                            if($href == $childLink->getPath() || $href == substr($childLink->getPath(), 1)) {
+                                $childLink->setMetaInfo('href', $node->extract('href')[0]);
+                                $childLink->setMetaInfo('linksText', trim($node->html()));
+                                return;
+                            }
+                        });
+                    }                    
                 }
                 $count++;
             }
@@ -189,7 +206,8 @@ class Crawler
      * @param int    $depth
      */
     protected function traverseSingle(Link $linkObj, $depth)
-    {        
+    {       
+        $crawler = null; 
         $linkObj->setCrawlDepth($depth);
         $hash = $linkObj->getAbsoluteUrl(false);        
         $this->links[$hash] = $linkObj;        
@@ -237,6 +255,8 @@ class Crawler
             }else{
                 $linkObj->setStatusCode($statusCode);
             }
+
+            return $crawler;
         } catch (ClientException $e) {  
             if ($filterLinks && $filterLinks($linkObj) === false) {
                 $this->log(LogLevel::INFO, $hash.' skipping storing broken link not matching filter criteria');
@@ -330,7 +350,8 @@ class Crawler
             } else {		
                 $originalLink = $this->links[$hash];
                 $originalLink->addMetaInfo('originalUrls',$childLink->getOriginalUrl());
-                $originalLink->addMetaInfo('linksText',$childLink->getMetaInfo('linksText'));                
+                $originalLink->setMetaInfo('linksText',$info->getMetaInfo('linksText')); 
+                $originalLink->setMetaInfo('href',$info->getMetaInfo('href'));   
             }
 
             $this->childrenByDepth[$depth][$sourceUrl->getAbsoluteUrl(false)][] = $hash;                        
@@ -350,11 +371,18 @@ class Crawler
             $nodeText = trim($node->html());               
             
             $href = $node->extract('href')[0];
+            $originalHref = $href;
             if(empty($href)===true){
                 return;
             }
+
+            if (!filter_var($href, FILTER_VALIDATE_URL) && substr($href, 0, 1) != '/') {
+                $href = '/' . $href;
+            }
+
             $nodeLink = new Link($href,$pageLink);
-            $nodeLink->addMetaInfo('linksText', $nodeText);
+            $nodeLink->setMetaInfo('linksText', $nodeText);
+            $nodeLink->setMetaInfo('href', $originalHref);
             
             $hash = $nodeLink->getAbsoluteUrl(false,false);
             if(isset($this->links[$hash]) === false){
